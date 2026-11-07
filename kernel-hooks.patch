@@ -1,0 +1,53 @@
+Subject: [PATCH] kernel: add LaunchTrace startup read recorder hooks
+Target: Linux 4.4 commit afd2ff9b7e1b367172f18ba7f693dfb62bdcb2dc
+
+The module cannot be called directly from built-in kernel objects. Add the
+small built-in dispatch layer in kernel/launchtrace.c; the loadable recorder
+registers callbacks and pins its module while a callback is running.
+
+1. Copy launchtrace.h to include/linux/launchtrace.h.
+2. Copy launchtrace-core.c to kernel/launchtrace.c.
+3. Add `obj-y += launchtrace.o` to kernel/Makefile.
+4. Add the hook calls below.
+5. Build/load the external module from this directory.
+
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@
+ #include <linux/compat.h>
++#include <linux/launchtrace.h>
+@@
+ 	if (IS_ERR(filename))
+ 		return PTR_ERR(filename);
++	/* Experimental: starts capture before exec success is known. */
++	launchtrace_exec_start(filename->name);
+
+--- a/block/blk-core.c
++++ b/block/blk-core.c
+@@
+ #include <linux/fault-inject.h>
++#include <linux/launchtrace.h>
+@@
+ blk_qc_t submit_bio(int rw, struct bio *bio)
+ {
+ 	bio->bi_rw |= rw;
++	/* Observe read BIOs before generic_make_request can remap/split them. */
++	if (!(rw & WRITE))
++		launchtrace_bio_submit(bio);
+
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@
+ #include <linux/oom.h>
++#include <linux/launchtrace.h>
+@@
+ 	group_dead = atomic_dec_and_test(&tsk->signal->live);
++	/* One notification for the last exiting thread in this thread group. */
++	if (group_dead)
++		launchtrace_task_exit(task_tgid_nr(tsk));
+
+IMPORTANT: The exit hunk is a placement guide. Verify the exact local context
+and variable names in the complete target checkout. The callback must run
+only on the group_dead path, not once for every thread. The exec hook is
+intentionally before successful exec completion; failed-exec rollback is
+not implemented in this version.
